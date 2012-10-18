@@ -6,9 +6,15 @@ require __DIR__ . '/ClassLoader.php';
 
 class ComposerAutoloaderInitFilesAutoloadOrder
 {
+    private static $loader;
+
     public static function getLoader()
     {
-        $loader = new \Composer\Autoload\ClassLoader();
+        if (null !== static::$loader) {
+            return static::$loader;
+        }
+
+        static::$loader = $loader = new \Composer\Autoload\ClassLoader();
         $vendorDir = dirname(__DIR__);
         $baseDir = dirname($vendorDir);
 
@@ -25,9 +31,11 @@ class ComposerAutoloaderInitFilesAutoloadOrder
         $loader->register();
 
         require $vendorDir . '/c/lorem/testC.php';
-        require $vendorDir . '/a/foo/testA.php';
+        require $vendorDir . '/z/foo/testA.php';
         require $baseDir . '/root.php';
         require $vendorDir . '/b/bar/testB.php';
+        require $vendorDir . '/d/d/testD.php';
+        require $vendorDir . '/e/e/testE.php';
 
         return $loader;
     }

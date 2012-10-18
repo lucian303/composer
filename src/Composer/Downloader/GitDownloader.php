@@ -19,6 +19,8 @@ use Composer\Package\PackageInterface;
  */
 class GitDownloader extends VcsDownloader
 {
+    private $hasStashedChanges = false;
+
     /**
      * {@inheritDoc}
      */
@@ -49,10 +51,12 @@ class GitDownloader extends VcsDownloader
         $this->io->write("    Checking out ".$ref);
         $command = 'cd %s && git remote set-url composer %s && git fetch composer && git fetch --tags composer';
 
-        // capture username/password from github URL if there is one
-        $this->process->execute(sprintf('cd %s && git remote -v', escapeshellarg($path)), $output);
-        if (preg_match('{^composer\s+https://(.+):(.+)@github.com/}im', $output, $match)) {
-            $this->io->setAuthorization('github.com', $match[1], $match[2]);
+        if (!$this->io->hasAuthorization('github.com')) {
+            // capture username/password from github URL if there is one
+            $this->process->execute(sprintf('cd %s && git remote -v', escapeshellarg($path)), $output);
+            if (preg_match('{^composer\s+https://(.+):(.+)@github.com/}im', $output, $match)) {
+                $this->io->setAuthorization('github.com', $match[1], $match[2]);
+            }
         }
 
         $commandCallable = function($url) use ($ref, $path, $command) {
@@ -76,9 +80,89 @@ class GitDownloader extends VcsDownloader
         return trim($output) ?: null;
     }
 
+    /**
+     * {@inheritDoc}
+     */
+    protected function cleanChanges($path, $update)
+    {
+        if (!$this->io->isInteractive()) {
+            return parent::cleanChanges($path, $update);
+        }
+
+        if (!$changes = $this->getLocalChanges($path)) {
+            return;
+        }
+
+        $changes = array_map(function ($elem) {
+            return '    '.$elem;
+        }, preg_split('{\s*\r?\n\s*}', $changes));
+        $this->io->write('    <error>The package has modified files:</error>');
+        $this->io->write(array_slice($changes, 0, 10));
+        if (count($changes) > 10) {
+            $this->io->write('    <info>'.count($changes) - 10 . ' more files modified, choose "v" to view the full list</info>');
+        }
+
+        while (true) {
+            switch ($this->io->ask('    <info>Discard changes [y,n,v,'.($update ? 's,' : '').'?]?</info> ', '?')) {
+                case 'y':
+                    if (0 !== $this->process->execute('git reset --hard', $output, $path)) {
+                        throw new \RuntimeException("Could not reset changes\n\n:".$this->process->getErrorOutput());
+                    }
+                    break 2;
+
+                case 's':
+                    if (!$update) {
+                        goto help;
+                    }
+
+                    if (0 !== $this->process->execute('git stash', $output, $path)) {
+                        throw new \RuntimeException("Could not stash changes\n\n:".$this->process->getErrorOutput());
+                    }
+
+                    $this->hasStashedChanges = true;
+                    break 2;
+
+                case 'n':
+                    throw new \RuntimeException('Update aborted');
+
+                case 'v':
+                    $this->io->write($changes);
+                    break;
+
+                case '?':
+                default:
+                    help:
+                    $this->io->write(array(
+                        '    y - discard changes and apply the '.($update ? 'update' : 'uninstall'),
+                        '    n - abort the '.($update ? 'update' : 'uninstall').' and let you manually clean things up',
+                        '    v - view modified files',
+                    ));
+                    if ($update) {
+                        $this->io->write('    s - stash changes and try to reapply them after the update');
+                    }
+                    $this->io->write('    ? - print help');
+                    break;
+            }
+        }
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    protected function reapplyChanges($path)
+    {
+        if ($this->hasStashedChanges) {
+            $this->io->write('    <info>Re-applying stashed changes');
+            if (0 !== $this->process->execute('git stash pop', $output, $path)) {
+                throw new \RuntimeException("Failed to apply stashed changes:\n\n".$this->process->getErrorOutput());
+            }
+        }
+    }
+
     protected function updateToCommit($path, $reference, $branch, $date)
     {
         $template = 'git checkout %s && git reset --hard %1$s';
+        $branch = preg_replace('{(?:^dev-|(?:\.x)?-dev$)}i', '', $branch);
 
         // check whether non-commitish are branches or tags, and fetch branches with the remote name
         $gitRef = $reference;
@@ -86,7 +170,24 @@ class GitDownloader extends VcsDownloader
             && 0 === $this->process->execute('git branch -r', $output, $path)
             && preg_match('{^\s+composer/'.preg_quote($reference).'$}m', $output)
         ) {
-            $gitRef = 'composer/'.$reference;
+            $command = sprintf('git checkout -B %s %s && git reset --hard %2$s', escapeshellarg($branch), escapeshellarg('composer/'.$reference));
+            if (0 === $this->process->execute($command, $output, $path)) {
+                return;
+            }
+        }
+
+        // try to checkout branch by name and then reset it so it's on the proper branch name
+        if (preg_match('{^[a-f0-9]{40}$}', $reference)) {
+            $command = sprintf('git checkout %s', escapeshellarg($branch));
+            $fallbackCommand = sprintf('git checkout -B %s %s', escapeshellarg($branch), escapeshellarg('composer/'.$branch));
+            if (0 === $this->process->execute($command, $output, $path)
+                || 0 === $this->process->execute($fallbackCommand, $output, $path)
+            ) {
+                $command = sprintf('git reset --hard %s', escapeshellarg($reference));
+                if (0 === $this->process->execute($command, $output, $path)) {
+                    return;
+                }
+            }
         }
 
         $command = sprintf($template, escapeshellarg($gitRef));
@@ -96,7 +197,6 @@ class GitDownloader extends VcsDownloader
 
         // reference was not found (prints "fatal: reference is not a tree: $ref")
         if ($date && false !== strpos($this->process->getErrorOutput(), $reference)) {
-            $branch = preg_replace('{(?:^dev-|(?:\.x)?-dev$)}i', '', $branch);
             $date = $date->format('U');
 
             // guess which remote branch to look at first
@@ -120,7 +220,7 @@ class GitDownloader extends VcsDownloader
             if (empty($newReference)) {
                 // no matching branch found, find the previous commit by date in all commits
                 if (0 !== $this->process->execute(sprintf($guessTemplate, $date, '--all'), $output, $path)) {
-                    throw new \RuntimeException('Failed to execute ' . $command . "\n\n" . $this->process->getErrorOutput());
+                    throw new \RuntimeException('Failed to execute ' . $this->sanitizeUrl($command) . "\n\n" . $this->process->getErrorOutput());
                 }
                 $newReference = trim($output);
             }
@@ -134,7 +234,7 @@ class GitDownloader extends VcsDownloader
             }
         }
 
-        throw new \RuntimeException('Failed to execute ' . $command . "\n\n" . $this->process->getErrorOutput());
+        throw new \RuntimeException('Failed to execute ' . $this->sanitizeUrl($command) . "\n\n" . $this->process->getErrorOutput());
     }
 
     /**
@@ -168,7 +268,7 @@ class GitDownloader extends VcsDownloader
             }
 
             // failed to checkout, first check git accessibility
-            $this->throwException('Failed to clone ' . $url .' via git, https and http protocols, aborting.' . "\n\n" . implode("\n", $messages), $url);
+            $this->throwException('Failed to clone ' . $this->sanitizeUrl($url) .' via git, https and http protocols, aborting.' . "\n\n" . implode("\n", $messages), $url);
         }
 
         $command = call_user_func($commandCallable, $url);
@@ -204,7 +304,7 @@ class GitDownloader extends VcsDownloader
             if (null !== $path) {
                 $this->filesystem->removeDirectory($path);
             }
-            $this->throwException('Failed to execute ' . $command . "\n\n" . $this->process->getErrorOutput(), $url);
+            $this->throwException('Failed to execute ' . $this->sanitizeUrl($command) . "\n\n" . $this->process->getErrorOutput(), $url);
         }
     }
 
@@ -221,10 +321,15 @@ class GitDownloader extends VcsDownloader
     protected function throwException($message, $url)
     {
         if (0 !== $this->process->execute('git --version', $ignoredOutput)) {
-            throw new \RuntimeException('Failed to clone '.$url.', git was not found, check that it is installed and in your PATH env.' . "\n\n" . $this->process->getErrorOutput());
+            throw new \RuntimeException('Failed to clone '.$this->sanitizeUrl($url).', git was not found, check that it is installed and in your PATH env.' . "\n\n" . $this->process->getErrorOutput());
         }
 
         throw new \RuntimeException($message);
+    }
+
+    protected function sanitizeUrl($message)
+    {
+        return preg_replace('{://(.+?):.+?@}', '://$1:***@', $message);
     }
 
     protected function setPushUrl(PackageInterface $package, $path)

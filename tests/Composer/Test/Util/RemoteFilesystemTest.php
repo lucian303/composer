@@ -25,7 +25,7 @@ class RemoteFilesystemTest extends \PHPUnit_Framework_TestCase
             ->will($this->returnValue(false))
         ;
 
-        $res = $this->callGetOptionsForUrl($io, array('http://example.org'));
+        $res = $this->callGetOptionsForUrl($io, array('http://example.org', array()));
         $this->assertTrue(isset($res['http']['header']) && false !== strpos($res['http']['header'], 'User-Agent'), 'getOptions must return an array with a header containing a User-Agent');
     }
 
@@ -43,8 +43,43 @@ class RemoteFilesystemTest extends \PHPUnit_Framework_TestCase
             ->will($this->returnValue(array('username' => 'login', 'password' => 'password')))
         ;
 
-        $options = $this->callGetOptionsForUrl($io, array('http://example.org'));
+        $options = $this->callGetOptionsForUrl($io, array('http://example.org', array()));
         $this->assertContains('Authorization: Basic', $options['http']['header']);
+    }
+
+    public function testGetOptionsForUrlWithStreamOptions()
+    {
+        $io = $this->getMock('Composer\IO\IOInterface');
+        $io
+            ->expects($this->once())
+            ->method('hasAuthorization')
+            ->will($this->returnValue(true))
+        ;
+
+        $streamOptions = array('ssl' => array(
+            'allow_self_signed' => true,
+        ));
+
+        $res = $this->callGetOptionsForUrl($io, array('https://example.org', array()), $streamOptions);
+        $this->assertTrue(isset($res['ssl']) && isset($res['ssl']['allow_self_signed']) && true === $res['ssl']['allow_self_signed'], 'getOptions must return an array with a allow_self_signed set to true');
+    }
+
+    public function testGetOptionsForUrlWithCallOptionsKeepsHeader()
+    {
+        $io = $this->getMock('Composer\IO\IOInterface');
+        $io
+            ->expects($this->once())
+            ->method('hasAuthorization')
+            ->will($this->returnValue(true))
+        ;
+
+        $streamOptions = array('http' => array(
+            'header' => 'Foo: bar',
+        ));
+
+        $res = $this->callGetOptionsForUrl($io, array('https://example.org', $streamOptions));
+        $this->assertTrue(isset($res['http']['header']), 'getOptions must return an array with a http.header key');
+        $this->assertGreaterThan(strlen('Foo: bar'), strlen($res['http']['header']));
     }
 
     public function testCallbackGetFileSize()
@@ -102,9 +137,9 @@ class RemoteFilesystemTest extends \PHPUnit_Framework_TestCase
         unlink($file);
     }
 
-    protected function callGetOptionsForUrl($io, array $args = array())
+    protected function callGetOptionsForUrl($io, array $args = array(), array $options = array())
     {
-        $fs = new RemoteFilesystem($io);
+        $fs = new RemoteFilesystem($io, $options);
         $ref = new \ReflectionMethod($fs, 'getOptionsForUrl');
         $ref->setAccessible(true);
 
