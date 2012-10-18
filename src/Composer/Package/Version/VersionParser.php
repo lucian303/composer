@@ -171,10 +171,10 @@ class VersionParser
     }
 
     /**
-     * @param string $source source package name
-     * @param string $sourceVersion source package version (pretty version ideally)
-     * @param string $description link description (e.g. requires, replaces, ..)
-     * @param array $links array of package name => constraint mappings
+     * @param  string $source        source package name
+     * @param  string $sourceVersion source package version (pretty version ideally)
+     * @param  string $description   link description (e.g. requires, replaces, ..)
+     * @param  array  $links         array of package name => constraint mappings
      * @return Link[]
      */
     public function parseLinks($source, $sourceVersion, $description, $links)
@@ -234,6 +234,13 @@ class VersionParser
 
     private function parseConstraint($constraint)
     {
+        if (preg_match('{^([^,\s]+?)@('.implode('|', array_keys(BasePackage::$stabilities)).')$}i', $constraint, $match)) {
+            $constraint = $match[1];
+            if ($match[2] !== 'stable') {
+                $stabilityModifier = $match[2];
+            }
+        }
+
         if (preg_match('{^[x*](\.[x*])*$}i', $constraint)) {
             return array();
         }
@@ -273,6 +280,10 @@ class VersionParser
         if (preg_match('{^(<>|!=|>=?|<=?|==?)?\s*(.*)}', $constraint, $matches)) {
             try {
                 $version = $this->normalize($matches[2]);
+
+                if (!empty($stabilityModifier) && $this->parseStability($version) === 'stable') {
+                    $version .= '-' . $stabilityModifier;
+                }
 
                 return array(new VersionConstraint($matches[1] ?: '=', $version));
             } catch (\Exception $e) {}

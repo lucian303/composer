@@ -91,6 +91,7 @@ class Installer
     protected $autoloadGenerator;
 
     protected $preferSource = false;
+    protected $preferDist = false;
     protected $devMode = false;
     protected $dryRun = false;
     protected $verbose = false;
@@ -111,15 +112,15 @@ class Installer
     /**
      * Constructor
      *
-     * @param IOInterface         $io
-     * @param Config              $config
-     * @param RootPackageInterface    $package
-     * @param DownloadManager     $downloadManager
-     * @param RepositoryManager   $repositoryManager
-     * @param Locker              $locker
-     * @param InstallationManager $installationManager
-     * @param EventDispatcher     $eventDispatcher
-     * @param AutoloadGenerator   $autoloadGenerator
+     * @param IOInterface          $io
+     * @param Config               $config
+     * @param RootPackageInterface $package
+     * @param DownloadManager      $downloadManager
+     * @param RepositoryManager    $repositoryManager
+     * @param Locker               $locker
+     * @param InstallationManager  $installationManager
+     * @param EventDispatcher      $eventDispatcher
+     * @param AutoloadGenerator    $autoloadGenerator
      */
     public function __construct(IOInterface $io, Config $config, RootPackageInterface $package, DownloadManager $downloadManager, RepositoryManager $repositoryManager, Locker $locker, InstallationManager $installationManager, EventDispatcher $eventDispatcher, AutoloadGenerator $autoloadGenerator)
     {
@@ -147,6 +148,9 @@ class Installer
 
         if ($this->preferSource) {
             $this->downloadManager->setPreferSource(true);
+        }
+        if ($this->preferDist) {
+            $this->downloadManager->setPreferDist(true);
         }
 
         // create installed repo, this contains all local packages + platform packages (php & extensions)
@@ -387,16 +391,15 @@ class Installer
 
             // force update to locked version if it does not match the installed version
             if ($installFromLock) {
-                unset($lockedReference);
                 foreach ($lockedRepository->findPackages($package->getName()) as $lockedPackage) {
                     if (
                         $lockedPackage->isDev()
-                        && $lockedPackage->getSourceReference()
-                        && $lockedPackage->getSourceReference() !== $package->getSourceReference()
+                        && (
+                            ($lockedPackage->getSourceReference() && $lockedPackage->getSourceReference() !== $package->getSourceReference())
+                            || ($lockedPackage->getDistReference() && $lockedPackage->getDistReference() !== $package->getDistReference())
+                        )
                     ) {
-                        $newPackage = clone $package;
-                        $newPackage->setSourceReference($lockedPackage->getSourceReference());
-                        $operations[] = new UpdateOperation($package, $newPackage);
+                        $operations[] = new UpdateOperation($package, $lockedPackage);
 
                         break;
                     }
@@ -475,6 +478,7 @@ class Installer
                     $references = $this->package->getReferences();
                     if (isset($references[$package->getName()])) {
                         $package->setSourceReference($references[$package->getName()]);
+                        $package->setDistReference($references[$package->getName()]);
                     }
                 }
             }
@@ -667,6 +671,19 @@ class Installer
     public function setPreferSource($preferSource = true)
     {
         $this->preferSource = (boolean) $preferSource;
+
+        return $this;
+    }
+
+    /**
+     * prefer dist installation
+     *
+     * @param  boolean   $preferDist
+     * @return Installer
+     */
+    public function setPreferDist($preferDist = true)
+    {
+        $this->preferDist = (boolean) $preferDist;
 
         return $this;
     }

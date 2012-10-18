@@ -12,6 +12,7 @@
 
 namespace Composer;
 
+use Composer\Config\JsonConfigSource;
 use Composer\Json\JsonFile;
 use Composer\IO\IOInterface;
 use Composer\Repository\ComposerRepository;
@@ -38,7 +39,7 @@ class Factory
             if (defined('PHP_WINDOWS_VERSION_MAJOR')) {
                 $home = getenv('APPDATA') . '/Composer';
             } else {
-                $home = getenv('HOME') . '/.composer';
+                $home = rtrim(getenv('HOME'), '/') . '/.composer';
             }
         }
 
@@ -59,6 +60,7 @@ class Factory
         if ($file->exists()) {
             $config->merge($file->read());
         }
+        $config->setConfigSource(new JsonConfigSource($file));
 
         return $config;
     }
@@ -137,6 +139,13 @@ class Factory
         // Configuration defaults
         $config = static::createConfig();
         $config->merge($localConfig);
+
+        // reload oauth token from config if available
+        if ($tokens = $config->get('github-oauth')) {
+            foreach ($tokens as $domain => $token) {
+                $io->setAuthorization($domain, $token, 'x-oauth-basic');
+            }
+        }
 
         $vendorDir = $config->get('vendor-dir');
         $binDir = $config->get('bin-dir');
